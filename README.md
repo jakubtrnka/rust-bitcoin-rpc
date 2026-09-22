@@ -1,7 +1,8 @@
 # bitcoind-rpc-client
 
-A JSON-RPC client for Bitcoin Core v31.1, with blocking and async
-implementations that share one typed method set.
+A JSON-RPC client for Bitcoin Core, with blocking and async implementations
+that share one typed method set. The types follow Core v31.1 and accept
+replies from v29 onward.
 
 ## Install
 
@@ -81,9 +82,69 @@ in `examples/btc-cli.rs`, and the `blocks`/`chain` fields on the
 fixture test in `tests/serde_fixtures.rs`. Only the network round-trip to a
 real node is untested — see [Scope](#scope).
 
+## Configuration
+
+Both `ClientBuilder`s take the same knobs; every one accepts `None` to turn
+the limit off.
+
+| Setter | Default | What it bounds |
+| --- | --- | --- |
+| `auth` | `Auth::None` | Credentials: `Auth::user_pass(..)` or `Auth::cookie_file(..)`. |
+| `connect_timeout` | 30 s | Establishing the TCP connection (and TLS handshake). |
+| `read_timeout` | 60 s | How long the node may take to start replying, and to keep the body coming. Async: an idle timeout that restarts on every read. Sync: one budget for the headers, another for the body. |
+| `timeout` | `None` | A hard overall deadline for the whole request, on top of the two above. |
+| `max_response_size` | 64 MiB | The reply body; a larger one fails with `Error::ResponseTooLarge` instead of being buffered. |
+
+A long-polling call (`wait_for_new_block`, `wait_for_block_height`,
+`get_block_template` with a `longpollid`) is cut short by `read_timeout`
+long before the RPC-level wait it asked for. Build a separate client with
+`.read_timeout(None)` for those.
+
+## Batching
+
+Both transport traits can send several calls in one HTTP round trip as a
+JSON-RPC 2.0 batch. `call_batch` runs one method over many argument lists and
+types every result; `call_batch_raw` mixes methods and keeps each call's own
+`Result`, so one rejected call does not hide the others:
+
+```rust,no_run
+use bitcoin_rpc::prelude::sync::*;
+use serde_json::json;
+
+# fn main() -> bitcoin_rpc::Result<()> {
+let client = ClientBuilder::new("http://127.0.0.1:8332").build()?;
+
+// One request, one reply array, results in argument order.
+let hashes: Vec<String> = client.call_batch(
+    "getblockhash",
+    (800_000..800_010).map(|h| json!([h])).collect(),
+)?;
+
+// Per-call results, mixed methods.
+let results = client.call_batch_raw(&[
+    ("getblockcount", json!([])),
+    ("getblockhash", json!([u32::MAX])), // this one fails with Error::Rpc
+])?;
+assert!(results[0].is_ok());
+assert!(results[1].is_err());
+# let _ = hashes;
+# Ok(())
+# }
+```
+
+`BlockchainRpc::get_block_hashes` and `get_block_headers` are the two
+ready-made batched methods, for walking a range of the chain. Replies are
+matched to requests by id, never by position, and a reply array that answers
+an id twice, skips one, or has the wrong length fails the whole batch with
+`Error::Transport`.
+
+Extension traits over `RpcCall`/`RpcCallAsync` get batching for free: the
+trait's default `call_batch_raw` falls back to sequential calls, and the
+shipped clients override it with a real batch.
+
 ## Adding your own RPC
 
-This crate ships 44 typed methods (see [Scope](#scope) below) but not every
+This crate ships 56 typed methods (see [Scope](#scope) below) but not every
 RPC Bitcoin Core exposes. Reaching anything else — the wallet RPCs, the
 hidden/regtest-only RPCs, or a method a future Core release adds — means
 writing your own extension trait over `RpcCall` (sync) or `RpcCallAsync`
@@ -142,21 +203,30 @@ for the sync side by
 
 ## Scope
 
-54 typed methods across eight traits: `BlockchainRpc` (15),
+56 typed methods across eight traits: `BlockchainRpc` (17),
 `RawTransactionsRpc` (15), `NetworkRpc` (6), `MempoolRpc` (5), `MiningRpc` (5),
 `ControlRpc` (4), `UtilRpc` (3), `FeeRpc` (1) — over 48 distinct RPC commands.
-The surplus of 6 comes from four commands whose result shape depends on a
+The surplus of 8 comes from four commands whose result shape depends on a
 verbosity or mode argument, so each is split into a separate typed method: `getblock` (x3:
 `get_block_hex`, `get_block`, `get_block_with_txs`), `getrawmempool` (x3:
 `get_raw_mempool`, `get_raw_mempool_verbose`, `get_raw_mempool_with_sequence`),
 `getblockheader` (x2: `get_block_header`, `get_block_header_hex`), and
-`getrawtransaction` (x2: `get_raw_transaction`, `get_raw_transaction_hex`).
+`getrawtransaction` (x2: `get_raw_transaction`, `get_raw_transaction_hex`);
+plus the two batched forms `get_block_hashes` and `get_block_headers` (see
+[Batching](#batching)).
 
 `RawTransactionsRpc` covers the whole wallet-free PSBT family: `createpsbt`,
 `decodepsbt`, `analyzepsbt`, `finalizepsbt`, `descriptorprocesspsbt`,
 `combinepsbt`, `joinpsbts`, `converttopsbt` and `utxoupdatepsbt`, with
 `deriveaddresses` on `UtilRpc`. `decodepsbt`'s result is modelled in full,
 including the Taproot fields and the BIP 373 MuSig2 fields added in v31.
+
+Every BTC-denominated field is an `Amount` (whole satoshis) and every fee rate
+a `FeeRate` (satoshis per kvB), never an `f64`. Both convert to and from the
+eight-decimal JSON number Core puts on the wire exactly, so a value read from
+the node and sent back is byte-for-byte what the node emitted, and
+`Amount::from_btc(0.1 + 0.2)` is an error rather than a silently wrong
+`0.30000000000000004` for Core to reject. Do arithmetic in satoshis.
 
 Not covered, deliberately:
 
@@ -175,31 +245,49 @@ Not covered, deliberately:
 
 Use the extension-trait pattern above for anything on the "not covered" list.
 
+### Node versions
+
+The result types are transcribed from Bitcoin Core v31.1. A node running
+v29 or v30 works too: every field Core added after v29 is an `Option` that
+comes back `None` from an older node, and each such field's doc comment
+names the release that introduced it (`getblock`'s `coinbase_tx`,
+`getmempoolinfo`'s cluster-mempool limits, `getpeerinfo`'s inventory
+counters, and so on). Fields a newer node adds that this crate does not know
+about are ignored. Nodes before v29 are not supported: v29 is where Core
+switched to JSON-RPC 2.0 replies, which the transport relies on.
+
 This crate has been verified against the Bitcoin Core v31.1 source and
 against a mock HTTP server (see `tests/`). The PSBT result types are
 additionally checked against payloads captured from a live bitcoind v31.1 on
 regtest (`tests/data/`): each one is deserialized and re-serialized, so a
-field this crate failed to model would show up as missing. The remaining
-methods have not yet been exercised against a live node's happy path.
+field this crate failed to model would show up as missing. Every read-only
+method has also been exercised, through both clients, against a live Bitcoin
+Core v29.0 mainnet node; `tests/live_node.rs` repeats that survey against any
+node you point it at (ignored by default, see its module docs).
 
 ## Errors
 
 Every fallible call returns `bitcoin_rpc::Result<T>`, an alias for
-`Result<T, Error>`. `Error` has four variants:
+`Result<T, Error>`. `Error` has five variants:
 
 - `Config` — the client was misconfigured: a bad URL, or an unreadable or
   malformed cookie file.
 - `Transport` — the HTTP request failed, or the node's HTTP-level response
   could not be turned into a JSON-RPC reply (for example, a `401` from a
   node that rejected the supplied credentials arrives this way, naming the
-  status in the message).
+  status in the message). A reply whose JSON-RPC `id` does not match the
+  request's is also rejected here: every request carries a fresh id, and a
+  reply answering some other id is never handed back as this call's result.
 - `Json` — the reply body was not the JSON expected at the JSON-RPC layer.
 - `Rpc` — the node executed the request and returned a JSON-RPC error. Its
   `code` is Core's raw `RPC_*` constant from `src/rpc/protocol.h`.
+- `ResponseTooLarge` — the reply body exceeded `ClientBuilder::max_response_size`
+  (64 MiB by default) and was abandoned rather than buffered. Raise the cap,
+  or pass `None` to lift it, for calls that legitimately return more.
 
 `Error` is `#[non_exhaustive]`, so a future release can add variants without
 that being a breaking change. Downstream `match` expressions must include a
-wildcard arm (`_ => ...`) — matching all four variants today and nothing else
+wildcard arm (`_ => ...`) — matching all five variants today and nothing else
 will fail to compile.
 
 ## License

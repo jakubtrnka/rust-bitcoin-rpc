@@ -11,12 +11,13 @@ use super::call::{RpcCall, RpcCallExt};
 use crate::Result;
 use crate::params::positional;
 use crate::types::{
-    AddressValidation, Block, BlockHashAndHeight, BlockHeader, BlockTemplate, BlockTemplateRequest,
-    BlockWithTxs, BlockchainInfo, ChainTip, CreateRawTransactionInput, CreateRawTransactionOutput,
-    DeploymentInfo, DerivedAddresses, DescriptorRange, DescriptorRequest, FeeEstimate, IndexInfo,
-    MempoolEntry, MempoolInfo, MiningInfo, NetTotals, NetworkInfo, PeerInfo, PsbtAnalysis,
-    PsbtDecoded, PsbtFinalization, PsbtProcessResult, RawMempoolSequence, RpcInfo, SighashType,
-    TestMempoolAcceptResult, Transaction, TxOut,
+    AddressValidation, Amount, Block, BlockHashAndHeight, BlockHeader, BlockTemplate,
+    BlockTemplateRequest, BlockWithTxs, BlockchainInfo, ChainTip, CreateRawTransactionInput,
+    CreateRawTransactionOutput, DeploymentInfo, DerivedAddresses, DescriptorRange,
+    DescriptorRequest, FeeEstimate, FeeRate, IndexInfo, MempoolEntry, MempoolInfo, MiningInfo,
+    NetTotals, NetworkInfo, PeerInfo, PsbtAnalysis, PsbtDecoded, PsbtFinalization,
+    PsbtProcessResult, RawMempoolSequence, RpcInfo, SighashType, TestMempoolAcceptResult,
+    Transaction, TxOut,
 };
 
 /// Blockchain RPCs.
@@ -44,6 +45,16 @@ pub trait BlockchainRpc: RpcCall {
         self.call("getblockhash", positional(vec![json!(height)]))
     }
 
+    /// Returns the hashes of the blocks at `heights`, in one batched round
+    /// trip; the result lines up with `heights` index for index.
+    ///
+    /// Any height the node rejects (past the tip, say) fails the whole call
+    /// with that `Error::Rpc`.
+    fn get_block_hashes(&self, heights: &[u32]) -> Result<Vec<String>> {
+        let params = heights.iter().map(|h| positional(vec![json!(h)])).collect();
+        self.call_batch("getblockhash", params)
+    }
+
     /// Returns the serialized, hex-encoded data for the block `hash`.
     fn get_block_hex(&self, hash: &str) -> Result<String> {
         self.call("getblock", positional(vec![json!(hash), json!(0)]))
@@ -64,6 +75,19 @@ pub trait BlockchainRpc: RpcCall {
     /// Returns information about the block header of block `hash`.
     fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
         self.call("getblockheader", positional(vec![json!(hash), json!(true)]))
+    }
+
+    /// Returns the headers of the blocks `hashes`, in one batched round trip;
+    /// the result lines up with `hashes` index for index.
+    ///
+    /// Any hash the node does not know fails the whole call with that
+    /// `Error::Rpc`.
+    fn get_block_headers(&self, hashes: &[&str]) -> Result<Vec<BlockHeader>> {
+        let params = hashes
+            .iter()
+            .map(|h| positional(vec![json!(h), json!(true)]))
+            .collect();
+        self.call_batch("getblockheader", params)
     }
 
     /// Returns the serialized, hex-encoded data for the block header of block
@@ -113,9 +137,10 @@ pub trait BlockchainRpc: RpcCall {
     /// Waits for any new block and returns its hash and height.
     ///
     /// `timeout_ms` of `None` or `0` means no timeout at the RPC level, but
-    /// the client's own per-request timeout (`ClientBuilder::timeout`, 30
+    /// the client's own read timeout (`ClientBuilder::read_timeout`, 60
     /// seconds by default) still applies and aborts the wait with
-    /// `Error::Transport` unless the client was built with `.timeout(None)`.
+    /// `Error::Transport` unless the client was built with
+    /// `.read_timeout(None)`.
     /// `current_tip` makes the node wait for the chain tip to differ from
     /// that hash, which is more reliable than letting it sample the tip
     /// itself.
@@ -134,9 +159,10 @@ pub trait BlockchainRpc: RpcCall {
     /// height of the current tip.
     ///
     /// `timeout_ms` of `None` or `0` means no timeout at the RPC level, but
-    /// the client's own per-request timeout (`ClientBuilder::timeout`, 30
+    /// the client's own read timeout (`ClientBuilder::read_timeout`, 60
     /// seconds by default) still applies and aborts the wait with
-    /// `Error::Transport` unless the client was built with `.timeout(None)`.
+    /// `Error::Transport` unless the client was built with
+    /// `.read_timeout(None)`.
     fn wait_for_block_height(
         &self,
         height: u32,
@@ -248,9 +274,10 @@ pub trait MiningRpc: RpcCall {
     /// `"template"` mode is modelled — `"proposal"` mode returns a different
     /// result shape. Supplying `request.longpoll_id` makes the node hold the
     /// response until a new template is available, which can take a while;
-    /// the client's own per-request timeout (`ClientBuilder::timeout`, 30
+    /// the client's own read timeout (`ClientBuilder::read_timeout`, 60
     /// seconds by default) still applies and aborts the wait with
-    /// `Error::Transport` unless the client was built with `.timeout(None)`.
+    /// `Error::Transport` unless the client was built with
+    /// `.read_timeout(None)`.
     fn get_block_template(&self, request: &BlockTemplateRequest) -> Result<BlockTemplate> {
         self.call(
             "getblocktemplate",
@@ -314,19 +341,15 @@ pub trait RawTransactionsRpc: RpcCall {
 
     /// Submits the raw transaction `hex` to the network and returns its hash.
     ///
-    /// `max_fee_rate` rejects the transaction if its fee rate is higher, in
-    /// BTC/kvB; `0` accepts any fee rate. `max_burn_amount` rejects it if it has
-    /// provably unspendable outputs worth more than that, in BTC.
-    ///
-    /// Core parses `max_fee_rate` and `max_burn_amount` from their literal
-    /// decimal text and accepts at most 8 decimal places; a value with more,
-    /// such as `0.1 + 0.2` producing `0.30000000000000004`, is rejected with
-    /// `RPC_TYPE_ERROR`. This crate does not round either value for you.
+    /// `max_fee_rate` rejects the transaction if its fee rate is higher;
+    /// `FeeRate::ZERO` accepts any fee rate. `max_burn_amount` rejects it if
+    /// it has provably unspendable outputs worth more than that. Both are
+    /// sent as the exact BTC decimals Core expects.
     fn send_raw_transaction(
         &self,
         hex: &str,
-        max_fee_rate: Option<f64>,
-        max_burn_amount: Option<f64>,
+        max_fee_rate: Option<FeeRate>,
+        max_burn_amount: Option<Amount>,
     ) -> Result<String> {
         self.call(
             "sendrawtransaction",
@@ -382,16 +405,11 @@ pub trait RawTransactionsRpc: RpcCall {
     ///
     /// More than one transaction is tested as a package, so parents must come
     /// before children. `max_fee_rate` rejects a transaction whose fee rate is
-    /// higher, in BTC/kvB.
-    ///
-    /// Core parses `max_fee_rate` from its literal decimal text and accepts at
-    /// most 8 decimal places; a value with more, such as `0.1 + 0.2` producing
-    /// `0.30000000000000004`, is rejected with `RPC_TYPE_ERROR`. This crate
-    /// does not round it for you.
+    /// higher.
     fn test_mempool_accept(
         &self,
         raw_txs: &[String],
-        max_fee_rate: Option<f64>,
+        max_fee_rate: Option<FeeRate>,
     ) -> Result<Vec<TestMempoolAcceptResult>> {
         self.call(
             "testmempoolaccept",

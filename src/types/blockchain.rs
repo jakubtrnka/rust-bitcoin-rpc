@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use super::amount::Amount;
 use super::rawtx::{ScriptPubKey, Transaction};
 
 /// Result of `getblockchaininfo`.
@@ -157,7 +158,10 @@ pub struct Block {
     /// The block weight as defined in BIP 141.
     pub weight: u64,
     /// Coinbase transaction metadata.
-    pub coinbase_tx: CoinbaseTx,
+    ///
+    /// Absent from nodes before Bitcoin Core v31, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub coinbase_tx: Option<CoinbaseTx>,
     /// The block height or index.
     pub height: u64,
     /// The block version.
@@ -236,7 +240,10 @@ pub struct BlockWithTxs {
     /// The block weight as defined in BIP 141.
     pub weight: u64,
     /// Coinbase transaction metadata.
-    pub coinbase_tx: CoinbaseTx,
+    ///
+    /// Absent from nodes before Bitcoin Core v31, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub coinbase_tx: Option<CoinbaseTx>,
     /// The block height or index.
     pub height: u64,
     /// The block version.
@@ -373,7 +380,10 @@ pub struct DeploymentInfo {
     /// Requested block height (or tip).
     pub height: u64,
     /// Script verify flags for the block.
-    pub script_flags: Vec<String>,
+    ///
+    /// Absent from nodes before Bitcoin Core v31, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub script_flags: Option<Vec<String>>,
     /// Deployment state, keyed by deployment name.
     pub deployments: BTreeMap<String, Deployment>,
 }
@@ -387,8 +397,8 @@ pub struct TxOut {
     pub best_block: String,
     /// The number of confirmations.
     pub confirmations: i64,
-    /// The transaction value in BTC.
-    pub value: f64,
+    /// The transaction value.
+    pub value: Amount,
     /// The output script.
     #[cfg_attr(feature = "serde", serde(rename = "scriptPubKey"))]
     pub script_pub_key: ScriptPubKey,

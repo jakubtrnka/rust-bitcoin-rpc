@@ -7,8 +7,8 @@ use bitcoin_rpc::aio::{
     RawTransactionsRpc, RpcCallAsync, RpcCallAsyncExt, UtilRpc,
 };
 use bitcoin_rpc::types::{
-    BlockTemplateRequest, CreateRawTransactionInput, CreateRawTransactionOutput, DerivedAddresses,
-    DescriptorRange, DescriptorRequest, SighashType,
+    Amount, BlockTemplateRequest, CreateRawTransactionInput, CreateRawTransactionOutput,
+    DerivedAddresses, DescriptorRange, DescriptorRequest, FeeRate, SighashType,
 };
 use bitcoin_rpc::{Auth, Error};
 use common::fixtures::{
@@ -220,10 +220,13 @@ async fn get_block_with_txs_sends_verbosity_2_and_deserializes() {
     .unwrap();
     assert_eq!(block.height, 100);
     assert_eq!(block.stripped_size, 285);
-    assert_eq!(block.coinbase_tx.sequence, 4294967295);
-    assert_eq!(block.coinbase_tx.witness.as_deref(), Some("00"));
+    assert_eq!(block.coinbase_tx.as_ref().unwrap().sequence, 4294967295);
+    assert_eq!(
+        block.coinbase_tx.as_ref().unwrap().witness.as_deref(),
+        Some("00")
+    );
     assert_eq!(block.tx.len(), 1);
-    assert_eq!(block.tx[0].tx.fee, Some(0.00012345));
+    assert_eq!(block.tx[0].tx.fee, Some(Amount::from_sat(12_345)));
     // Reached through the `serde(flatten)`-ed transaction body.
     assert_eq!(block.tx[0].tx.vsize, 204);
     assert_eq!(block.tx[0].tx.vout[0].script_pub_key.script_type, "pubkey");
@@ -266,7 +269,7 @@ async fn get_deployment_info_omits_absent_block_hash() {
     let client = ClientBuilder::new(server.url()).build().unwrap();
 
     let info = client.get_deployment_info(None).await.unwrap();
-    assert_eq!(info.script_flags, vec!["P2SH"]);
+    assert_eq!(info.script_flags.clone().unwrap(), vec!["P2SH"]);
     assert_eq!(info.deployments["segwit"].deployment_type, "buried");
     assert_eq!(info.deployments["segwit"].bip9, None);
 
@@ -303,7 +306,7 @@ async fn get_mempool_entry_sends_txid_and_deserializes() {
         .unwrap();
     assert_eq!(entry.vsize, 204);
     assert_eq!(entry.height, 800000);
-    assert_eq!(entry.fees.base, 0.00012345);
+    assert_eq!(entry.fees.base, Amount::from_sat(12_345));
     assert_eq!(entry.depends.len(), 1);
     assert!(entry.spent_by.is_empty());
     assert!(!entry.unbroadcast);
@@ -478,7 +481,7 @@ async fn get_raw_transaction_sends_verbosity_1_and_deserializes() {
     assert_eq!(tx.vin[0].vout, Some(1));
     assert_eq!(tx.vin[0].script_sig.as_ref().unwrap().hex, "483045022100");
     assert_eq!(tx.vin[0].tx_in_witness.as_ref().unwrap().len(), 2);
-    assert_eq!(tx.vout[0].value, 0.04998);
+    assert_eq!(tx.vout[0].value, Amount::from_sat(4_998_000));
     assert_eq!(tx.vout[0].script_pub_key.script_type, "witness_v0_keyhash");
 
     let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].body).unwrap();
@@ -507,7 +510,7 @@ async fn create_raw_transaction_sends_both_output_forms() {
     let outputs = [
         CreateRawTransactionOutput::Address {
             address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
-            amount: 0.01,
+            amount: Amount::from_sat(1_000_000),
         },
         CreateRawTransactionOutput::Data("00010203".to_string()),
     ];
@@ -555,8 +558,8 @@ async fn test_mempool_accept_deserializes_hyphenated_fee_keys() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].allowed, Some(true));
     let fees = results[0].fees.as_ref().unwrap();
-    assert_eq!(fees.base, 0.00001234);
-    assert_eq!(fees.effective_feerate, 0.00008567);
+    assert_eq!(fees.base, Amount::from_sat(1_234));
+    assert_eq!(fees.effective_feerate, FeeRate::from_sat_per_kvb(8_567));
     assert_eq!(fees.effective_includes.len(), 1);
     // Validation left unfinished by the first transaction: no `allowed` key.
     assert_eq!(results[1].allowed, None);
@@ -680,7 +683,7 @@ async fn all_54_typed_methods_send_the_expected_wire_form() {
     }];
     let outputs = [CreateRawTransactionOutput::Address {
         address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
-        amount: 0.01,
+        amount: Amount::from_sat(1_000_000),
     }];
     let raw_txs = ["0200000001abcdef".to_string()];
     let request = BlockTemplateRequest::default();
@@ -727,13 +730,19 @@ async fn all_54_typed_methods_send_the_expected_wire_form() {
     let _ = client.get_raw_transaction_hex("txid1", Some("bh1")).await;
     let _ = client.get_raw_transaction("txid1", Some("bh1")).await;
     let _ = client
-        .send_raw_transaction("hex1", Some(0.1), Some(0.01))
+        .send_raw_transaction(
+            "hex1",
+            Some(FeeRate::from_sat_per_kvb(10_000_000)),
+            Some(Amount::from_sat(1_000_000)),
+        )
         .await;
     let _ = client
         .create_raw_transaction(&inputs, &outputs, Some(800000), Some(true), Some(2))
         .await;
     let _ = client.decode_raw_transaction("hex1", Some(true)).await;
-    let _ = client.test_mempool_accept(&raw_txs, Some(0.5)).await;
+    let _ = client
+        .test_mempool_accept(&raw_txs, Some(FeeRate::from_sat_per_kvb(50_000_000)))
+        .await;
     let _ = client.estimate_smart_fee(6, Some("conservative")).await;
     let _ = client.uptime().await;
     let _ = client.stop().await;
@@ -1012,4 +1021,367 @@ async fn descriptor_process_psbt_deserializes_the_incomplete_shape() {
         sent["params"],
         json!(["cHNidP8BAFIC", ["wpkh(02aa)#checksum"], "ALL", true, false])
     );
+}
+
+#[tokio::test]
+async fn reply_with_a_different_id_is_rejected_as_a_transport_error() {
+    // The client's first request carries id 1; the "node" answers id 7 with a
+    // perfectly well-formed result. That result belongs to some other request
+    // and must not be returned as this one's.
+    let server = common::MockServer::spawn_verbatim(vec![(
+        200,
+        r#"{"jsonrpc":"2.0","id":7,"result":true}"#.to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    match client.call_raw("uptime", json!([])).await {
+        Err(Error::Transport(m)) => {
+            assert!(m.contains("reply id 7"), "{m}");
+            assert!(m.contains("request id 1"), "{m}");
+        }
+        other => panic!("expected Transport error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn request_ids_increase_across_calls_and_each_reply_is_matched_to_its_own() {
+    let server = common::MockServer::spawn(vec![
+        (200, r#"{"jsonrpc":"2.0","id":1,"result":1}"#.to_string()),
+        (200, r#"{"jsonrpc":"2.0","id":1,"result":2}"#.to_string()),
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    assert_eq!(
+        client.call_raw("uptime", json!([])).await.unwrap(),
+        json!(1)
+    );
+    assert_eq!(
+        client.call_raw("uptime", json!([])).await.unwrap(),
+        json!(2)
+    );
+
+    let ids: Vec<u64> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["id"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(ids, vec![1, 2]);
+}
+
+/// A well-formed reply whose `result` string pads the body to about `bytes`.
+fn padded_reply(bytes: usize) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"result":"{}"}}"#,
+        "x".repeat(bytes)
+    )
+}
+
+#[tokio::test]
+async fn reply_over_the_size_cap_is_rejected_without_being_buffered() {
+    let server = common::MockServer::spawn(vec![(200, padded_reply(4096))]);
+    let client = ClientBuilder::new(server.url())
+        .max_response_size(1024)
+        .build()
+        .unwrap();
+
+    match client.call_raw("help", json!([])).await {
+        Err(Error::ResponseTooLarge { limit }) => assert_eq!(limit, 1024),
+        other => panic!("expected ResponseTooLarge, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn reply_under_the_size_cap_is_accepted() {
+    let server = common::MockServer::spawn(vec![(200, padded_reply(512))]);
+    let client = ClientBuilder::new(server.url())
+        .max_response_size(1024)
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        client.call_raw("help", json!([])).await.unwrap(),
+        json!("x".repeat(512))
+    );
+}
+
+#[tokio::test]
+async fn size_cap_none_accepts_a_large_reply() {
+    let server = common::MockServer::spawn(vec![(200, padded_reply(11 * 1024 * 1024))]);
+    let client = ClientBuilder::new(server.url())
+        .max_response_size(None)
+        .build()
+        .unwrap();
+
+    let v = client.call_raw("help", json!([])).await.unwrap();
+    assert_eq!(v.as_str().unwrap().len(), 11 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn zero_size_cap_fails_at_build_time() {
+    assert!(matches!(
+        ClientBuilder::new("http://127.0.0.1:8332")
+            .max_response_size(0)
+            .build(),
+        Err(Error::Config(_))
+    ));
+}
+
+#[tokio::test]
+async fn read_timeout_aborts_a_call_the_node_never_answers() {
+    let server = common::MockServer::spawn_silent();
+    let client = ClientBuilder::new(server.url())
+        .read_timeout(std::time::Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    match client.call_raw("uptime", json!([])).await {
+        Err(Error::Transport(m)) => assert!(m.to_lowercase().contains("timed out"), "{m}"),
+        other => panic!("expected Transport error, got {other:?}"),
+    }
+    // Well under the 60 s default: the per-call setting took effect.
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    // The request did reach the server; it was the silence that failed us.
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn all_timeouts_none_still_builds_a_working_client() {
+    let server = common::MockServer::spawn(vec![(
+        200,
+        r#"{"jsonrpc":"2.0","id":1,"result":true}"#.to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url())
+        .timeout(None)
+        .connect_timeout(None)
+        .read_timeout(None)
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        client.call_raw("uptime", json!([])).await.unwrap(),
+        json!(true)
+    );
+}
+
+#[tokio::test]
+async fn overall_timeout_still_applies_on_top_of_the_phase_timeouts() {
+    let server = common::MockServer::spawn_silent();
+    let client = ClientBuilder::new(server.url())
+        .read_timeout(None)
+        .timeout(std::time::Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        client.call_raw("uptime", json!([])).await,
+        Err(Error::Transport(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn batch_sends_one_request_with_consecutive_ids_and_returns_results_in_order() {
+    let server = common::MockServer::spawn(vec![(
+        200,
+        r#"[{"jsonrpc":"2.0","id":1,"result":"h1"},{"jsonrpc":"2.0","id":2,"result":"h2"},{"jsonrpc":"2.0","id":3,"result":"h3"}]"#.to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    let results = client
+        .call_batch_raw(&[
+            ("getblockhash", json!([1])),
+            ("getblockhash", json!([2])),
+            ("getblockhash", json!([3])),
+        ])
+        .await
+        .unwrap();
+    let values: Vec<&str> = results
+        .iter()
+        .map(|r| r.as_ref().unwrap().as_str().unwrap())
+        .collect();
+    assert_eq!(values, ["h1", "h2", "h3"]);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "a batch is one HTTP request");
+    let sent: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    let sent = sent.as_array().expect("batch body is a JSON array");
+    assert_eq!(sent.len(), 3);
+    for (i, req) in sent.iter().enumerate() {
+        assert_eq!(req["jsonrpc"], "2.0");
+        assert_eq!(req["id"], i as u64 + 1);
+        assert_eq!(req["method"], "getblockhash");
+        assert_eq!(req["params"], json!([i as u64 + 1]));
+    }
+}
+
+#[tokio::test]
+async fn batch_replies_out_of_order_are_matched_by_id() {
+    let server = common::MockServer::spawn_verbatim(vec![(
+        200,
+        r#"[{"jsonrpc":"2.0","id":2,"result":"second"},{"jsonrpc":"2.0","id":1,"result":"first"}]"#
+            .to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    let results = client
+        .call_batch_raw(&[("uptime", json!([])), ("uptime", json!([]))])
+        .await
+        .unwrap();
+    assert_eq!(results[0].as_ref().unwrap(), "first");
+    assert_eq!(results[1].as_ref().unwrap(), "second");
+}
+
+#[tokio::test]
+async fn batch_keeps_per_call_rpc_errors_in_place() {
+    let server = common::MockServer::spawn(vec![(
+        200,
+        r#"[{"jsonrpc":"2.0","id":1,"result":800000},{"jsonrpc":"2.0","id":2,"error":{"code":-8,"message":"Block height out of range"}}]"#.to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    let results = client
+        .call_batch_raw(&[
+            ("getblockcount", json!([])),
+            ("getblockhash", json!([u32::MAX])),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(results[0].as_ref().unwrap(), 800000);
+    match &results[1] {
+        Err(Error::Rpc(e)) => assert_eq!(e.code, -8),
+        other => panic!("expected Rpc error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn batch_with_a_missing_reply_fails_as_a_whole() {
+    let server = common::MockServer::spawn_verbatim(vec![(
+        200,
+        r#"[{"jsonrpc":"2.0","id":1,"result":true}]"#.to_string(),
+    )]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    assert!(matches!(
+        client
+            .call_batch_raw(&[("uptime", json!([])), ("uptime", json!([]))])
+            .await,
+        Err(Error::Transport(_))
+    ));
+}
+
+#[tokio::test]
+async fn empty_batch_makes_no_request() {
+    let server = common::MockServer::spawn(vec![]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    assert!(client.call_batch_raw(&[]).await.unwrap().is_empty());
+    let none: Vec<u64> = client.call_batch("uptime", vec![]).await.unwrap();
+    assert!(none.is_empty());
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn typed_batch_deserializes_every_result_and_fails_on_the_first_rpc_error() {
+    let server = common::MockServer::spawn(vec![
+        (
+            200,
+            r#"[{"jsonrpc":"2.0","id":1,"result":1},{"jsonrpc":"2.0","id":2,"result":2}]"#.to_string(),
+        ),
+        (
+            200,
+            r#"[{"jsonrpc":"2.0","id":3,"result":1},{"jsonrpc":"2.0","id":4,"error":{"code":-8,"message":"nope"}}]"#.to_string(),
+        ),
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    let ok: Vec<u64> = client
+        .call_batch("getblockcount", vec![json!([]), json!([])])
+        .await
+        .unwrap();
+    assert_eq!(ok, [1, 2]);
+
+    match client
+        .call_batch::<u64>("getblockcount", vec![json!([]), json!([])])
+        .await
+    {
+        Err(Error::Rpc(e)) => assert_eq!(e.code, -8),
+        other => panic!("expected Rpc error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ids_keep_counting_after_a_batch() {
+    let server = common::MockServer::spawn(vec![
+        (
+            200,
+            r#"[{"jsonrpc":"2.0","id":1,"result":1},{"jsonrpc":"2.0","id":2,"result":2}]"#
+                .to_string(),
+        ),
+        (200, r#"{"jsonrpc":"2.0","id":1,"result":3}"#.to_string()),
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    client
+        .call_batch_raw(&[("uptime", json!([])), ("uptime", json!([]))])
+        .await
+        .unwrap();
+    client.call_raw("uptime", json!([])).await.unwrap();
+
+    let single: serde_json::Value = serde_json::from_str(&server.requests()[1].body).unwrap();
+    assert_eq!(single["id"], 3);
+}
+
+#[tokio::test]
+async fn get_block_hashes_and_headers_are_batched() {
+    let server = common::MockServer::spawn(vec![
+        (
+            200,
+            r#"[{"jsonrpc":"2.0","id":1,"result":"aa"},{"jsonrpc":"2.0","id":2,"result":"bb"}]"#
+                .to_string(),
+        ),
+        (
+            200,
+            format!(
+                "[{},{}]",
+                r#"{"jsonrpc":"2.0","id":1,"result":{"hash":"aa","confirmations":2,"height":1,"version":1,"versionHex":"00000001","merkleroot":"m","time":1,"mediantime":1,"nonce":0,"bits":"1d00ffff","target":"t","difficulty":1.0,"chainwork":"c","nTx":1}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"result":{"hash":"bb","confirmations":1,"height":2,"version":1,"versionHex":"00000001","merkleroot":"m","time":2,"mediantime":2,"nonce":0,"bits":"1d00ffff","target":"t","difficulty":1.0,"chainwork":"c","nTx":1}}"#
+            ),
+        ),
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    assert_eq!(
+        client.get_block_hashes(&[1, 2]).await.unwrap(),
+        ["aa", "bb"]
+    );
+    let headers = client.get_block_headers(&["aa", "bb"]).await.unwrap();
+    assert_eq!(headers.len(), 2);
+    assert_eq!(headers[1].height, 2);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let hashes: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(hashes[1]["method"], "getblockhash");
+    assert_eq!(hashes[1]["params"], json!([2]));
+    let headers: serde_json::Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(headers[0]["method"], "getblockheader");
+    assert_eq!(headers[0]["params"], json!(["aa", true]));
+}
+
+#[tokio::test]
+async fn batch_future_is_spawnable() {
+    let server = common::MockServer::spawn(vec![(
+        200,
+        r#"[{"jsonrpc":"2.0","id":1,"result":"aa"}]"#.to_string(),
+    )]);
+    let client = std::sync::Arc::new(ClientBuilder::new(server.url()).build().unwrap());
+
+    let handle = tokio::spawn(async move { client.get_block_hashes(&[1]).await });
+    assert!(handle.await.unwrap().is_ok());
 }

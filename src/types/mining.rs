@@ -4,11 +4,16 @@
 //! Bitcoin Core v31.1. No response struct rejects unknown fields, so a newer
 //! node adding a field does not break deserialization.
 //!
-//! Mining RPCs follow BIP 22 in using raw satoshi amounts rather than the BTC
-//! decimal `ValueFromAmount` form used elsewhere, so amount-shaped fields here
-//! are integers, not `f64`.
+//! Mining RPCs follow BIP 22 in using raw satoshi integers rather than the
+//! BTC decimal `ValueFromAmount` form used elsewhere, so amount-shaped fields
+//! here (`coinbasevalue`, a template transaction's `fee`) are plain `u64`
+//! satoshis, not [`Amount`](super::Amount), whose wire form is the decimal.
+//! `getmininginfo`'s `blockmintxfee` is the exception: it is a `CFeeRate`
+//! printed the usual way.
 
 use std::collections::BTreeMap;
+
+use super::amount::FeeRate;
 
 /// Result of `getmininginfo`.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,9 +42,11 @@ pub struct MiningInfo {
     /// The size of the mempool.
     #[cfg_attr(feature = "serde", serde(rename = "pooledtx"))]
     pub pooled_tx: u64,
-    /// Minimum feerate of packages selected for block inclusion in BTC/kvB.
-    #[cfg_attr(feature = "serde", serde(rename = "blockmintxfee"))]
-    pub block_min_tx_fee: f64,
+    /// Minimum feerate of packages selected for block inclusion.
+    ///
+    /// Absent from nodes before Bitcoin Core v30, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default, rename = "blockmintxfee"))]
+    pub block_min_tx_fee: Option<FeeRate>,
     /// Current network name.
     pub chain: String,
     /// The block challenge (aka. block script), in hexadecimal. Only present

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  # Pushes only run on the default branch. Pull requests run once per PR
+  # update through the pull_request event; pushes to PR branches do not
+  # trigger a second run because they are not main or master.
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Only pull request updates cancel each other. Pushes to main/master and
+# manual runs get a unique group per run, so they never wait or cancel.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (x86_64-linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v15
+        with:
+          # Store build results in the GitHub Actions cache only.
+          use-gha-cache: true
+          use-flakehub: false
+
+      - name: Build crate
+        run: nix build --print-build-logs .#packages.x86_64-linux.default
+
+  checks:
+    name: Checks (x86_64-linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v15
+        with:
+          # Store build results in the GitHub Actions cache only.
+          use-gha-cache: true
+          use-flakehub: false
+
+      - name: Run flake checks
+        run: nix flake check --print-build-logs --system x86_64-linux

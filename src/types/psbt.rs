@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use super::amount::{Amount, FeeRate};
 use super::rawtx::{ScriptPubKey, ScriptSig, Transaction};
 
 /// The signature hash type to sign a PSBT input with.
@@ -98,20 +99,20 @@ pub struct PsbtAnalysis {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub estimated_vsize: Option<u64>,
-    /// Estimated feerate of the final signed transaction, in BTC/kvB. Present
-    /// only once all of the PSBT's UTXO slots are filled.
+    /// Estimated feerate of the final signed transaction. Present only once
+    /// all of the PSBT's UTXO slots are filled.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub estimated_feerate: Option<f64>,
-    /// The transaction fee paid, in BTC. Present only once all of the PSBT's
-    /// UTXO slots are filled.
+    pub estimated_feerate: Option<FeeRate>,
+    /// The transaction fee paid. Present only once all of the PSBT's UTXO
+    /// slots are filled.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub fee: Option<f64>,
+    pub fee: Option<Amount>,
     /// Role of the next person this PSBT needs to go to: one of `creator`,
     /// `updater`, `signer`, `finalizer` or `extractor`.
     pub next: String,
@@ -225,8 +226,8 @@ pub struct PsbtProprietary {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PsbtWitnessUtxo {
-    /// The value in BTC.
-    pub amount: f64,
+    /// The value.
+    pub amount: Amount,
     /// The output script.
     #[cfg_attr(feature = "serde", serde(rename = "scriptPubKey"))]
     pub script_pub_key: ScriptPubKey,
@@ -609,10 +610,10 @@ pub struct PsbtDecoded {
     pub inputs: Vec<PsbtInput>,
     /// One entry per output, in transaction order.
     pub outputs: Vec<PsbtOutput>,
-    /// The fee in BTC. Present only once every input's UTXO is known.
+    /// The fee. Present only once every input's UTXO is known.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub fee: Option<f64>,
+    pub fee: Option<Amount>,
 }

@@ -6,6 +6,8 @@
 //! from a single function, `TxToUniv` in `src/core_io.cpp:430`, so one struct
 //! covers every caller; the fields only one caller supplies are optional.
 
+use super::amount::{Amount, FeeRate};
+
 /// A transaction output script, as emitted by `ScriptToUniv`
 /// (`bitcoin/src/core_io.cpp:409`) with `include_hex=true, include_address=true`.
 /// Used both for transaction outputs (here) and for [`crate::types::TxOut`]
@@ -50,8 +52,8 @@ pub struct TxInPrevout {
     pub generated: bool,
     /// The height of the prevout.
     pub height: u64,
-    /// The value in BTC.
-    pub value: f64,
+    /// The value.
+    pub value: Amount,
     /// The output script.
     #[cfg_attr(feature = "serde", serde(rename = "scriptPubKey"))]
     pub script_pub_key: ScriptPubKey,
@@ -97,8 +99,8 @@ pub struct TxIn {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TxOutput {
-    /// The value in BTC.
-    pub value: f64,
+    /// The value.
+    pub value: Amount,
     /// Index of this output within the transaction.
     pub n: u64,
     /// The output script.
@@ -158,13 +160,13 @@ pub struct Transaction {
     /// The block time, in seconds since the epoch.
     #[cfg_attr(feature = "serde", serde(default, rename = "blocktime"))]
     pub block_time: Option<i64>,
-    /// The transaction fee in BTC. Only present at `getrawtransaction`
+    /// The transaction fee. Only present at `getrawtransaction`
     /// verbosity 2, and only when the block's undo data is available
     /// (`bitcoin/src/core_io.cpp:520-524`). `getblock` verbosity 2 and 3
     /// inherit this field through [`crate::types::BlockTransaction`]'s
     /// `serde(flatten)`, since Core emits it from the same `TxToUniv` call.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub fee: Option<f64>,
+    pub fee: Option<Amount>,
 }
 
 /// One input of `createrawtransaction`.
@@ -191,17 +193,12 @@ pub struct CreateRawTransactionInput {
 /// It is only ever sent, so it has no `Deserialize`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateRawTransactionOutput {
-    /// Pay `amount` BTC to `address`.
+    /// Pay `amount` to `address`.
     Address {
         /// Destination address.
         address: String,
-        /// Amount in BTC.
-        ///
-        /// Core parses this from its literal decimal text and accepts at
-        /// most 8 decimal places; a value with more, such as `0.1 + 0.2`
-        /// producing `0.30000000000000004`, is rejected with
-        /// `RPC_TYPE_ERROR`. This crate does not round it for you.
-        amount: f64,
+        /// Amount to pay. Serialized as the exact BTC decimal Core expects.
+        amount: Amount,
     },
     /// An `OP_RETURN` output carrying `hex`.
     Data(String),
@@ -227,13 +224,13 @@ impl serde::Serialize for CreateRawTransactionOutput {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TestMempoolAcceptFees {
-    /// Transaction fee in BTC.
-    pub base: f64,
-    /// The effective feerate in BTC per kvB. May differ from the base feerate
-    /// if, for example, there are modified fees from `prioritisetransaction` or
-    /// a package feerate was used.
+    /// Transaction fee.
+    pub base: Amount,
+    /// The effective feerate. May differ from the base feerate if, for
+    /// example, there are modified fees from `prioritisetransaction` or a
+    /// package feerate was used.
     #[cfg_attr(feature = "serde", serde(rename = "effective-feerate"))]
-    pub effective_feerate: f64,
+    pub effective_feerate: FeeRate,
     /// Witness hashes of the transactions whose fees and vsizes are included in
     /// `effective_feerate`.
     #[cfg_attr(feature = "serde", serde(rename = "effective-includes"))]

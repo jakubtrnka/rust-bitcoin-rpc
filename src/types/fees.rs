@@ -5,6 +5,8 @@
 //! unknown fields, so a newer node adding a field does not break
 //! deserialization.
 
+use super::amount::FeeRate;
+
 /// Result of `estimatesmartfee`.
 ///
 /// When the node cannot produce an estimate, `feerate` is absent and
@@ -12,10 +14,9 @@
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeeEstimate {
-    /// Estimate fee rate in BTC/kvB (only present if no errors were
-    /// encountered).
+    /// Estimated fee rate (only present if no errors were encountered).
     #[cfg_attr(feature = "serde", serde(default))]
-    pub feerate: Option<f64>,
+    pub feerate: Option<FeeRate>,
     /// Errors encountered during processing, if there are any.
     #[cfg_attr(feature = "serde", serde(default))]
     pub errors: Option<Vec<String>>,

@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use super::amount::FeeRate;
+
 /// Result of `getnetworkinfo`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -40,12 +42,12 @@ pub struct NetworkInfo {
     pub network_active: bool,
     /// Information per network.
     pub networks: Vec<NetworkEntry>,
-    /// Minimum relay fee rate for transactions, in BTC/kvB.
+    /// Minimum relay fee rate for transactions.
     #[cfg_attr(feature = "serde", serde(rename = "relayfee"))]
-    pub relay_fee: f64,
-    /// Minimum fee rate increment for mempool limiting or replacement, in BTC/kvB.
+    pub relay_fee: FeeRate,
+    /// Minimum fee rate increment for mempool limiting or replacement.
     #[cfg_attr(feature = "serde", serde(rename = "incrementalfee"))]
-    pub incremental_fee: f64,
+    pub incremental_fee: FeeRate,
     /// List of local addresses.
     #[cfg_attr(feature = "serde", serde(rename = "localaddresses"))]
     pub local_addresses: Vec<LocalAddress>,
@@ -124,9 +126,15 @@ pub struct PeerInfo {
     #[cfg_attr(feature = "serde", serde(rename = "relaytxes"))]
     pub relay_txes: bool,
     /// Mempool sequence number of this peer's last INV.
-    pub last_inv_sequence: u64,
+    ///
+    /// Absent from nodes before Bitcoin Core v31, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub last_inv_sequence: Option<u64>,
     /// How many txs we have queued to announce to this peer.
-    pub inv_to_send: u64,
+    ///
+    /// Absent from nodes before Bitcoin Core v31, so `None` there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub inv_to_send: Option<u64>,
     /// The unix epoch time of the last send.
     #[cfg_attr(feature = "serde", serde(rename = "lastsend"))]
     pub last_send: i64,
@@ -188,9 +196,9 @@ pub struct PeerInfo {
     pub addr_rate_limited: u64,
     /// Any special permissions that have been granted to this peer.
     pub permissions: Vec<String>,
-    /// The minimum fee rate for transactions this peer accepts, in BTC/kvB.
+    /// The minimum fee rate for transactions this peer accepts.
     #[cfg_attr(feature = "serde", serde(rename = "minfeefilter"))]
-    pub min_fee_filter: f64,
+    pub min_fee_filter: FeeRate,
     /// The total bytes sent, aggregated by message type. A message type
     /// missing from this map means 0 bytes were sent for it.
     #[cfg_attr(feature = "serde", serde(rename = "bytessent_per_msg"))]

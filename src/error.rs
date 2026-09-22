@@ -38,6 +38,17 @@ pub enum Error {
     Json(serde_json::Error),
     /// The node returned a JSON-RPC error.
     Rpc(RpcError),
+    /// The reply body was larger than the client's configured limit
+    /// (`ClientBuilder::max_response_size`) and was not read to the end.
+    ///
+    /// `limit` is the configured maximum in bytes. Raise it, or pass `None`
+    /// to the builder to lift it, if the call legitimately returns this much
+    /// (e.g. `getblock` at verbosity 3 for a full block, or a verbose
+    /// `getrawmempool` on a busy node).
+    ResponseTooLarge {
+        /// The configured maximum body size in bytes.
+        limit: usize,
+    },
 }
 
 impl fmt::Display for Error {
@@ -48,6 +59,12 @@ impl fmt::Display for Error {
             #[cfg(feature = "serde")]
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Rpc(e) => write!(f, "{e}"),
+            Error::ResponseTooLarge { limit } => {
+                write!(
+                    f,
+                    "transport error: reply body exceeds the {limit}-byte limit"
+                )
+            }
         }
     }
 }
@@ -80,6 +97,15 @@ mod tests {
             message: "Block not found".into(),
         });
         assert_eq!(e.to_string(), "RPC error -8: Block not found");
+    }
+
+    #[test]
+    fn response_too_large_names_the_limit() {
+        let e = Error::ResponseTooLarge { limit: 1024 };
+        assert_eq!(
+            e.to_string(),
+            "transport error: reply body exceeds the 1024-byte limit"
+        );
     }
 
     #[test]

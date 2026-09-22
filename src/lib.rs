@@ -1,4 +1,9 @@
-//! A JSON-RPC client for Bitcoin Core v31.1.
+//! A JSON-RPC client for Bitcoin Core.
+//!
+//! The typed methods and their result types are transcribed from Bitcoin
+//! Core v31.1. Replies from v29 onward deserialize: every field Core added
+//! after v29 is an `Option` that is `None` on an older node, and each such
+//! field's docs say which release introduced it.
 //!
 //! Enable the `sync` feature for a blocking client or the `aio` feature for an
 //! async one. Neither is enabled by default.

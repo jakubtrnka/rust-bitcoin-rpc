@@ -1,4 +1,6 @@
 /target
-Cargo.lock
 .superpowers/
 docs/superpowers/
+result
+result-*
+.direnv/

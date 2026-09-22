@@ -177,3 +177,68 @@ fn prelude_brings_the_method_traits_into_scope() {
     // `uptime` resolves only via the prelude import brought into scope above.
     assert_eq!(client.uptime().unwrap(), 12345);
 }
+
+/// A transport a downstream crate might write itself: it implements only
+/// `call_raw`, and must still get `call_batch_raw` (falling back to one call
+/// after another) without writing anything.
+#[cfg(feature = "sync")]
+#[test]
+fn default_batch_on_a_custom_sync_transport_falls_back_to_sequential_calls() {
+    use bitcoin_rpc::Result;
+    use bitcoin_rpc::sync::{RpcCall, RpcCallExt};
+    use std::cell::RefCell;
+
+    struct Recording(RefCell<Vec<String>>);
+    impl RpcCall for Recording {
+        fn call_raw(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+            self.0.borrow_mut().push(format!("{method}{params}"));
+            Ok(json!(self.0.borrow().len()))
+        }
+    }
+
+    let transport = Recording(RefCell::new(Vec::new()));
+    let n: Vec<u64> = transport
+        .call_batch("getblockhash", vec![json!([1]), json!([2])])
+        .unwrap();
+    assert_eq!(n, [1, 2]);
+    assert_eq!(
+        *transport.0.borrow(),
+        ["getblockhash[1]", "getblockhash[2]"]
+    );
+}
+
+#[cfg(feature = "aio")]
+#[tokio::test]
+async fn default_batch_on_a_custom_async_transport_falls_back_to_sequential_calls() {
+    use bitcoin_rpc::Result;
+    use bitcoin_rpc::aio::{RpcCallAsync, RpcCallAsyncExt};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    struct Recording(Mutex<Vec<String>>);
+    impl RpcCallAsync for Recording {
+        fn call_raw<'a>(
+            &'a self,
+            method: &'a str,
+            params: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send + 'a>> {
+            Box::pin(async move {
+                let mut seen = self.0.lock().unwrap();
+                seen.push(format!("{method}{params}"));
+                Ok(json!(seen.len()))
+            })
+        }
+    }
+
+    let transport = Recording(Mutex::new(Vec::new()));
+    let n: Vec<u64> = transport
+        .call_batch("getblockhash", vec![json!([1]), json!([2])])
+        .await
+        .unwrap();
+    assert_eq!(n, [1, 2]);
+    assert_eq!(
+        *transport.0.lock().unwrap(),
+        ["getblockhash[1]", "getblockhash[2]"]
+    );
+}
