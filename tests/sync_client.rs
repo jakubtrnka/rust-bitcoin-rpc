@@ -1299,3 +1299,41 @@ fn get_block_hashes_and_headers_are_batched() {
     assert_eq!(headers[0]["method"], "getblockheader");
     assert_eq!(headers[0]["params"], json!(["aa", true]));
 }
+
+#[test]
+fn back_to_back_calls_reuse_one_connection() {
+    let server = common::MockServer::spawn_keep_alive(vec![
+        (
+            200,
+            r#"{"jsonrpc":"2.0","id":1,"result":1}"#.to_string()
+        );
+        2
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    client.call_raw("getblockcount", json!([])).unwrap();
+    client.call_raw("getblockcount", json!([])).unwrap();
+
+    assert_eq!(server.connections(), 1);
+}
+
+#[test]
+fn idle_connection_is_not_reused_after_pool_idle_timeout() {
+    let server = common::MockServer::spawn_keep_alive(vec![
+        (
+            200,
+            r#"{"jsonrpc":"2.0","id":1,"result":1}"#.to_string()
+        );
+        2
+    ]);
+    let client = ClientBuilder::new(server.url())
+        .pool_idle_timeout(std::time::Duration::from_millis(50))
+        .build()
+        .unwrap();
+
+    client.call_raw("getblockcount", json!([])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    client.call_raw("getblockcount", json!([])).unwrap();
+
+    assert_eq!(server.connections(), 2);
+}

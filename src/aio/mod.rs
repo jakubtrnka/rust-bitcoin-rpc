@@ -99,6 +99,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Set how long an idle keep-alive connection is kept for reuse, or
+    /// `None` to keep it until the node closes it. Defaults to 10 seconds.
+    ///
+    /// Bitcoin Core closes an RPC connection after `-rpcservertimeout`
+    /// seconds without a request (30 by default). Keep this well below that:
+    /// a request sent on a connection the node is closing at that moment
+    /// fails with a transport error and is not retried.
+    pub fn pool_idle_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.config.pool_idle_timeout = timeout.into();
+        self
+    }
+
     /// Cap the size of a reply body, or `None` for no cap. Defaults to
     /// 64 MiB.
     ///
@@ -130,6 +142,7 @@ impl ClientBuilder {
         if let Some(timeout) = self.config.read_timeout {
             builder = builder.read_timeout(timeout);
         }
+        builder = builder.pool_idle_timeout(self.config.pool_idle_timeout);
         let http = builder.build().map_err(|e| Error::Config(e.to_string()))?;
         Ok(Client {
             http,
