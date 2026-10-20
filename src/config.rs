@@ -21,6 +21,15 @@ pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// that a dead connection is noticed within a minute.
 pub(crate) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Default time an idle keep-alive connection is kept for reuse.
+///
+/// Bitcoin Core drops an RPC connection that has been idle for
+/// `-rpcservertimeout` seconds (30 by default). A request sent on a
+/// connection the node closed at the same moment fails with a transport
+/// error, so the client must give up on an idle connection well before the
+/// node does.
+pub(crate) const DEFAULT_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     pub url: String,
@@ -31,6 +40,8 @@ pub(crate) struct Config {
     pub connect_timeout: Option<Duration>,
     /// Deadline for the node to start replying, and to keep the body coming.
     pub read_timeout: Option<Duration>,
+    /// How long an idle keep-alive connection may wait to be reused.
+    pub pool_idle_timeout: Option<Duration>,
     pub max_response_size: Option<usize>,
 }
 
@@ -42,6 +53,7 @@ impl Config {
             timeout: None,
             connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
             read_timeout: Some(DEFAULT_READ_TIMEOUT),
+            pool_idle_timeout: Some(DEFAULT_POOL_IDLE_TIMEOUT),
             max_response_size: Some(DEFAULT_MAX_RESPONSE_SIZE),
         }
     }
@@ -73,6 +85,7 @@ mod tests {
         assert_eq!(c.timeout, None);
         assert_eq!(c.connect_timeout, Some(Duration::from_secs(30)));
         assert_eq!(c.read_timeout, Some(Duration::from_secs(60)));
+        assert_eq!(c.pool_idle_timeout, Some(Duration::from_secs(10)));
         assert_eq!(c.max_response_size, Some(64 * 1024 * 1024));
     }
 

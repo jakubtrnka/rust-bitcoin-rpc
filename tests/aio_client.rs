@@ -1385,3 +1385,41 @@ async fn batch_future_is_spawnable() {
     let handle = tokio::spawn(async move { client.get_block_hashes(&[1]).await });
     assert!(handle.await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn back_to_back_calls_reuse_one_connection() {
+    let server = common::MockServer::spawn_keep_alive(vec![
+        (
+            200,
+            r#"{"jsonrpc":"2.0","id":1,"result":1}"#.to_string()
+        );
+        2
+    ]);
+    let client = ClientBuilder::new(server.url()).build().unwrap();
+
+    client.call_raw("getblockcount", json!([])).await.unwrap();
+    client.call_raw("getblockcount", json!([])).await.unwrap();
+
+    assert_eq!(server.connections(), 1);
+}
+
+#[tokio::test]
+async fn idle_connection_is_not_reused_after_pool_idle_timeout() {
+    let server = common::MockServer::spawn_keep_alive(vec![
+        (
+            200,
+            r#"{"jsonrpc":"2.0","id":1,"result":1}"#.to_string()
+        );
+        2
+    ]);
+    let client = ClientBuilder::new(server.url())
+        .pool_idle_timeout(std::time::Duration::from_millis(50))
+        .build()
+        .unwrap();
+
+    client.call_raw("getblockcount", json!([])).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    client.call_raw("getblockcount", json!([])).await.unwrap();
+
+    assert_eq!(server.connections(), 2);
+}

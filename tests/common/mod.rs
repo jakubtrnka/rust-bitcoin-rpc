@@ -4,6 +4,7 @@ pub mod fixtures;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// What the server saw for one request.
@@ -16,6 +17,7 @@ pub struct ReceivedRequest {
 pub struct MockServer {
     url: String,
     received: Arc<Mutex<Vec<ReceivedRequest>>>,
+    connections: Arc<AtomicUsize>,
 }
 
 /// Whether a canned reply's `id` is rewritten to echo the request's.
@@ -70,7 +72,60 @@ impl MockServer {
         MockServer {
             url: format!("http://{addr}"),
             received,
+            connections: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Serve the canned replies over keep-alive connections: a connection
+    /// stays open and answers request after request until the client closes
+    /// it. [`MockServer::connections`] counts how many the client opened, so
+    /// a test can tell a reused connection from a fresh one.
+    pub fn spawn_keep_alive(replies: Vec<(u16, String)>) -> MockServer {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let connections = Arc::new(AtomicUsize::new(0));
+        let replies = Arc::new(Mutex::new(std::collections::VecDeque::from(replies)));
+        let sink = Arc::clone(&received);
+        let opened = Arc::clone(&connections);
+
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                opened.fetch_add(1, Ordering::SeqCst);
+                let sink = Arc::clone(&sink);
+                let replies = Arc::clone(&replies);
+                std::thread::spawn(move || {
+                    // Read first, then take a reply: a reply popped while
+                    // blocked on a connection the client has dropped would
+                    // starve the connection it opened instead.
+                    while let Some(request) = read_request(&mut stream) {
+                        let Some((status, body)) = replies.lock().expect("lock").pop_front() else {
+                            return;
+                        };
+                        reply(
+                            &mut stream,
+                            status,
+                            &body,
+                            IdMode::Echo,
+                            false,
+                            request,
+                            &sink,
+                        );
+                    }
+                });
+            }
+        });
+
+        MockServer {
+            url: format!("http://{addr}"),
+            received,
+            connections,
+        }
+    }
+
+    /// How many TCP connections the client has opened so far.
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
     }
 
     fn spawn_with(replies: Vec<(u16, String)>, mode: IdMode) -> MockServer {
@@ -81,16 +136,17 @@ impl MockServer {
 
         std::thread::spawn(move || {
             for (status, body) in replies {
-                let Ok((stream, _)) = listener.accept() else {
+                let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
-                handle(stream, status, &body, mode, &sink);
+                handle(&mut stream, status, &body, mode, true, &sink);
             }
         });
 
         MockServer {
             url: format!("http://{addr}"),
             received,
+            connections: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -103,19 +159,32 @@ impl MockServer {
     }
 }
 
-// Reads one request, then replies. The request is recorded (by the caller,
-// via `sink`) strictly before the reply is written, so a client can never
-// observe the reply before `requests()` reflects the request that earned it.
+// Reads one request, then replies.
 fn handle(
-    mut stream: TcpStream,
+    stream: &mut TcpStream,
     status: u16,
     body: &str,
     mode: IdMode,
+    close: bool,
     sink: &Mutex<Vec<ReceivedRequest>>,
 ) {
-    let Some((authorization, buf)) = read_request(&mut stream) else {
-        return;
-    };
+    if let Some(request) = read_request(stream) {
+        reply(stream, status, body, mode, close, request, sink);
+    }
+}
+
+// Records the request and writes the reply, strictly in that order, so a
+// client can never observe the reply before `requests()` reflects the
+// request that earned it.
+fn reply(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    mode: IdMode,
+    close: bool,
+    (authorization, buf): (Option<String>, Vec<u8>),
+    sink: &Mutex<Vec<ReceivedRequest>>,
+) {
     let request = String::from_utf8_lossy(&buf).into_owned();
     let body = match mode {
         IdMode::Echo => echo_ids(&request, body),
@@ -128,8 +197,9 @@ fn handle(
     });
 
     let reason = if status == 200 { "OK" } else { "Error" };
+    let connection = if close { "close" } else { "keep-alive" };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n{body}",
         body.len()
     );
     // A write failure must not un-record a request we already fully read.

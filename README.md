@@ -93,6 +93,7 @@ the limit off.
 | `connect_timeout` | 30 s | Establishing the TCP connection (and TLS handshake). |
 | `read_timeout` | 60 s | How long the node may take to start replying, and to keep the body coming. Async: an idle timeout that restarts on every read. Sync: one budget for the headers, another for the body. |
 | `timeout` | `None` | A hard overall deadline for the whole request, on top of the two above. |
+| `pool_idle_timeout` | 10 s | How long an idle keep-alive connection is kept for reuse. Bitcoin Core closes one after `-rpcservertimeout` seconds (30 by default), and a request sent on a connection the node is closing at that moment fails with a transport error; keep this well below the node's setting. |
 | `max_response_size` | 64 MiB | The reply body; a larger one fails with `Error::ResponseTooLarge` instead of being buffered. |
 
 A long-polling call (`wait_for_new_block`, `wait_for_block_height`,
